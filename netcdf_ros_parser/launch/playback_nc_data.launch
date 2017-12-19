@@ -1,0 +1,69 @@
+<launch>
+  <!-- Configuration through the launch file -->
+  <arg name="filename" default="$(find netcdf_ros_parser)/files/test_data.nc" />
+  <!-- Labels -->
+  <arg name="x_label" default="xc"/>
+  <arg name="y_label" default="yc"/>
+  <arg name="z_label" default="zc"/>
+  <arg name="time_label" default="time"/>
+  <arg name="day_offset" default="0"/>
+  <arg name="hour_offset" default="0"/>
+  <arg name="minutes_offset" default="0"/>
+  <!-- Current velocity labels -->
+  <arg name="u_east_label" default="u_east"/>
+  <arg name="v_north_label" default="v_north"/>
+  <!-- Wind velocity labels -->
+  <arg name="w_east_label" default="w_east"/>
+  <arg name="w_north_label" default="w_north"/>
+
+  <!-- When passing a list, do not add empty spaces after the commas -->
+  <arg name="variables" default="h2s,salinity,temperature,turbidity"/>
+
+  <arg name="namespace" default="nc_data"/>
+  <arg name="update_rate" default="1"/>
+
+  <arg name="max_size_pc" default="300"/>
+
+  <arg name="nc_data_ref_frame" default="ned"/>
+
+  <arg name="lat_ref" default="0.0"/>
+  <arg name="lon_ref" default="0.0"/>
+  <arg name="alt_ref" default="0.0"/>
+
+  <group ns="$(arg namespace)">
+    <node pkg="netcdf_ros_parser"
+      type="nc_data_server"
+      name="nc_data_server"
+      output="screen">
+      <rosparam subst_value="true">
+        update_rate: $(arg update_rate)
+        filename: $(arg filename)
+        max_size_pc: $(arg max_size_pc)
+        lat_ref: $(arg lat_ref)
+        lon_ref: $(arg lon_ref)
+        alt_ref: $(arg alt_ref)
+        nc_data_ref_frame: $(arg nc_data_ref_frame)
+        labels:
+          x: $(arg x_label)
+          y: $(arg y_label)
+          z: $(arg z_label)
+          time: $(arg time_label)
+        time_offset:
+          day: $(arg day_offset)
+          hour: $(arg hour_offset)
+          min: $(arg minutes_offset)
+        center_x: True
+        center_y: True
+        loop_time: True
+        current_velocity:
+          u_east: $(arg u_east_label)
+          v_north: $(arg v_north_label)
+        wind_velocity:
+          w_east: $(arg w_east_label)
+          w_north: $(arg w_north_label)
+        variables: [$(arg variables)]
+      </rosparam>
+    </node>
+  </group>
+
+</launch>
