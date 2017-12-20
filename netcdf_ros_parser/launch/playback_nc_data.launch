@@ -26,8 +26,8 @@
 
   <arg name="nc_data_ref_frame" default="ned"/>
 
-  <arg name="lat_ref" default="0.0"/>
-  <arg name="lon_ref" default="0.0"/>
+  <arg name="lat_ref" default="56.71897669633431"/>
+  <arg name="lon_ref" default="3.515625"/>
   <arg name="alt_ref" default="0.0"/>
 
   <group ns="$(arg namespace)">
@@ -52,8 +52,8 @@
           day: $(arg day_offset)
           hour: $(arg hour_offset)
           min: $(arg minutes_offset)
-        center_x: True
-        center_y: True
+        center_x: False
+        center_y: False
         loop_time: True
         current_velocity:
           u_east: $(arg u_east_label)
