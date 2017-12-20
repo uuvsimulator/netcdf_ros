@@ -1,0 +1,45 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import rospy
+from netcdf_ros_msgs.srv import SubscribeToNCServer
+
+
+if __name__ == '__main__':
+    rospy.init_node('subscribe_vehicle_to_nc_server')
+
+    namespace = rospy.get_param('~namespace')
+    odometry_topic = rospy.get_param('~odometry_topic')
+    using_gps = rospy.get_param('~using_gps')
+    odometry_reference_frame = rospy.get_param('~odometry_reference_frame')
+
+    assert isinstance(using_gps, bool)
+    assert isinstance(namespace, str)
+    assert isinstance(odometry_topic, str)
+    assert isinstance(odometry_reference_frame, str)
+    assert odometry_reference_frame in ['ned', 'enu', 'wgs84']
+    if using_gps:
+        assert odometry_reference_frame == 'wgs84'
+    assert len(namespace) > 0
+    assert len(odometry_topic) > 0
+
+    rospy.wait_for_service('/nc_data/subscribe_vehicle', timeout=30)
+
+    sub_vehicle = rospy.ServiceProxy('/nc_data/subscribe_vehicle', SubscribeToNCServer)
+
+    success = sub_vehicle(namespace, odometry_topic, using_gps,
+                          odometry_reference_frame)
+    print('Subscribe to NC data server status=' + str(success))
