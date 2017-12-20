@@ -79,7 +79,7 @@ if __name__ == '__main__':
                           axis=u'Y [m]'))
     # Assign the dimension data to the new NetCDF file.
     nc_fid.variables['yc'][:] = np.linspace(
-        -1000, -1000, nc_fid.dimensions['yc'].size)
+        -1000, 1000, nc_fid.dimensions['yc'].size)
 
     # Z coordinates
     nc_var = nc_fid.createVariable('zc', np.float64, ('zc'))
