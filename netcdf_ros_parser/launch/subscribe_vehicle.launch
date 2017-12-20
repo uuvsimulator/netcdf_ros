@@ -1,0 +1,17 @@
+<launch>
+  <arg name="namespace" />
+  <arg name="odometry_topic" />
+  <arg name="using_gps" />
+  <arg name="odometry_reference_frame" />
+
+  <group ns="$(arg namespace)">
+    <node name="subscribe_vehicle" pkg="netcdf_ros_parser" type="subscribe_vehicle" output="screen">
+      <rosparam subst_value="true">
+        namespace: $(arg namespace)
+        odometry_topic: $(arg odometry_topic)
+        using_gps: $(arg using_gps)
+        odometry_reference_frame: $(arg odometry_reference_frame)
+      </rosparam>
+    </node>
+  </group>
+</launch>
