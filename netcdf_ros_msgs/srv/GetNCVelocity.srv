@@ -22,4 +22,5 @@ geographic_msgs/GeoPoint geo_point
 string reference_frame_convention
 float64 time
 ---
-geometry_msgs/Vector3 vel
+float64 vel_north
+float64 vel_east
