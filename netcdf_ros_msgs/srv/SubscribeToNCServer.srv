@@ -20,6 +20,6 @@ string WGS84="wgs84"
 string name
 string odometry_topic
 bool using_gps
-string odometry_ref_frame
+string odometry_reference_frame
 ---
 bool success
