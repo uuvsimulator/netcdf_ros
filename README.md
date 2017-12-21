@@ -54,6 +54,23 @@ To run the `nc_data_server`, run the following ROS node
 roslaunch netcdf_ros_parser playback_nc_data.launch
 ```
 
+To subscribe a vehicle to the server to extract the data at the vehicle's
+current position, use the following
+
+```
+roslaunch netcdf_ros_parser subscribe_vehicle.launch
+  namespace:=<robot_namespace>
+  odometry_topic:=<Odometry or NatSatFix topic>
+  using_gps:=false
+  odometry_reference_frame:=<enu, ned or wgs84>
+```
+
+By doing this, a topic `/<robot_namespace>/nc_data` will be created where a
+[`sensor_msgs/PointCloud`](http://docs.ros.org/api/sensor_msgs/html/msg/PointCloud.html) message
+is published with the current position of the vehicle (using the reference
+frame convention given) with the interpolated variable data stored in each one
+of the message channels.
+
 ## License
 
 `netcdf_ros` is open-sourced under the Apache-2.0 license. See the
