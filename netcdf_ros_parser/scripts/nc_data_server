@@ -21,10 +21,9 @@ from pymap3d import *
 from threading import Lock
 from copy import deepcopy
 from netcdf_ros_msgs.srv import *
-from std_msgs.msg import Float64
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Vector3, Point32
-from sensor_msgs.msg import Temperature, PointCloud, ChannelFloat32, NavSatFix
+from geometry_msgs.msg import Vector3, Vector3Stamped, Point32
+from sensor_msgs.msg import PointCloud, ChannelFloat32, NavSatFix
 
 
 class NCDynamicNode:
@@ -44,6 +43,7 @@ class NCDynamicNode:
         self.name = name
         self.odometry_topic = odometry_topic
         self.position = dict()
+        self.is_init = False
 
         if self.using_gps:
             self.subscriber = rospy.Subscriber(
@@ -53,22 +53,38 @@ class NCDynamicNode:
                 self.odometry_topic, Odometry, self.odometry_callback)
 
         self.publishers = dict()
+        self.publishers['nc_data'] = rospy.Publisher(
+            '/{0}/nc_data'.format(self.name), PointCloud, queue_size=1)
 
-    def add_publisher(self, variable, topic_suffix, obj):
-        assert topic_suffix not in self.publishers
-        self.publishers[variable] = rospy.Publisher(
-            '/{0}/{1}'.format(self.name, topic_suffix), obj, queue_size=1)
+        self.pnts_msg = PointCloud()
+        self.pnts_msg.header.frame_id = ''
+
+    def add_variables(self, variables):
+        for var in variables:
+            self.pnts_msg.channels.append(ChannelFloat32())
+            self.pnts_msg.channels[-1].name = var
+
+    def publish_data(self):
+        if len(self.pnts_msg.header.frame_id) > 0:
+            self.publishers['nc_data'].publish(self.pnts_msg)
 
     def odometry_callback(self, msg):
+        if len(self.pnts_msg.header.frame_id) == 0:
+            self.pnts_msg.header.frame_id = msg.header.frame_id
         self.position['x'] = msg.pose.pose.position.x
         self.position['y'] = msg.pose.pose.position.y
         self.position['z'] = msg.pose.pose.position.z
+        if not self.is_init:
+            self.is_init = True
 
     def gps_callback(self, msg):
+        if len(self.pnts_msg.header.frame_id) == 0:
+            self.pnts_msg.header.frame_id = msg.header.frame_id
         self.position['lat'] = msg.latitude
         self.position['lon'] = msg.longitude
         self.position['alt'] = msg.altitude
-
+        if not self.is_init:
+            self.is_init = True
 
 class NCDataServer:
     def __init__(self):
@@ -144,17 +160,37 @@ class NCDataServer:
         print('X coordinate offset [m]=', self._x_offset)
         print('Y coordinate offset [m]=', self._y_offset)
 
-        if rospy.has_param('~variables'):
-            variables = rospy.get_param('~variables')
-            self._variables = dict()
-            if isinstance(variables, list):
-                for v in variables:
-                    self._variables[v] = v
-            elif isinstance(variables, dict):
-                self._variables = variables
+        self._update_rate = 50.0
+        if rospy.has_param('~update_rate'):
+            rate = rospy.get_param('~update_rate')
+            if rate > 0:
+                self._update_rate = float(rate)
             else:
-                raise rospy.ROSException('Invalid output topic configuration')
-            print('NC file variables to be published=', self._variables.keys())
+                print('Invalid update rate, keeping default of 50 Hz')
+
+        if rospy.has_param('~current_velocity'):
+            self._current_vel_config = rospy.get_param('~current_velocity')
+            self._timer_current = rospy.Timer(
+                rospy.Duration(1 / self._update_rate),
+                self.publish_current_velocity)
+            print('Publishing local current velocity')
+        else:
+            self._current_vel_config = None
+
+        if rospy.has_param('~wind_velocity'):
+            self._wind_vel_config = rospy.get_param('~wind_velocity')
+            self._timer_wind = rospy.Timer(
+                rospy.Duration(1 / self._update_rate),
+                self.publish_wind_velocity)
+            print('Publishing local wind velocity')
+        else:
+            self._wind_vel_config = None
+
+        if rospy.has_param('~variables'):
+            self._variables = rospy.get_param('~variables')
+            assert isinstance(self._variables, list)
+            print('NC file variables to be published=',
+                  self._get_all_variables())
         else:
             self._variables = None
             print('No variables set to be published')
@@ -200,42 +236,6 @@ class NCDataServer:
         ###############################################################
 
         self._vehicles = dict()
-        # Generate point clouds with all the sampled point variables
-        self._pc_variables = dict()
-        self._pc_msgs = dict()
-
-        for var in self._variables:
-            self._pc_variables[var] = rospy.Publisher(
-                '%s' % self._variables[var],
-                PointCloud,
-                queue_size=1)
-            self._pc_msgs[var] = PointCloud()
-            self._pc_msgs[var].header.frame_id = 'world'
-            self._pc_msgs[var].channels.append(ChannelFloat32())
-
-        self._update_rate = 50.0
-        if rospy.has_param('~update_rate'):
-            rate = rospy.get_param('~update_rate')
-            if rate > 0:
-                self._update_rate = float(rate)
-            else:
-                print('Invalid update rate, keeping default of 50 Hz')
-
-        if rospy.has_param('~current_velocity'):
-            self._current_vel_config = rospy.get_param('~current_velocity')
-            self._timer_current = rospy.Timer(rospy.Duration(1 / self._update_rate),
-                                              self.publish_current_velocity)
-            print('Publishing local current velocity')
-        else:
-            self._current_vel_config = None
-
-        if rospy.has_param('~wind_velocity'):
-            self._wind_vel_config = rospy.get_param('~wind_velocity')
-            self._timer_wind = rospy.Timer(rospy.Duration(1 / self._update_rate),
-                                           self.publish_wind_velocity)
-            print('Publishing local wind velocity')
-        else:
-            self._wind_vel_config = None
 
         self._subscribe_vehicle_srv = rospy.Service(
             'subscribe_vehicle',
@@ -260,36 +260,14 @@ class NCDataServer:
             req.name, req.odometry_topic, req.odometry_reference_frame,
             req.using_gps)
 
+        self._vehicles[req.name].add_variables(self._get_all_variables())
+
         print('Subscribing new vehicle')
         print('\tNamaspace=', self._vehicles[req.name].name)
         print('\tOdometry topic=', self._vehicles[req.name].odometry_topic)
         print('\tOdometry reference frame=',
               self._vehicles[req.name].odometry_reference_frame)
-
-        # If the configuration for the current velocity is available, add
-        # publisher for current velocity
-        if self._current_vel_config is not None:
-            self._vehicles[req.name].add_publisher(
-                'current_velocity', 'current_velocity', Vector3)
-
-        # If the configuration for the wind velocity is available, add
-        # publisher for wind velocity
-        if self._wind_vel_config is not None:
-            self._vehicles[req.name].add_publisher(
-                'wind_velocity', 'wind_velocity', Vector3)
-
-        # Creating publishers for NC file variables
-        for var in self._variables:
-            if 'temperature' in var.lower():
-                self._vehicles[req.name].add_publisher(
-                    var, self._variables[var], Temperature)
-            else:
-                self._vehicles[req.name].add_publisher(var, self._variables[var], Float64)
-
-        print('\tTopics:')
-        for var in self._vehicles[req.name].publishers:
-            print('\t\t{0}= {1}'.format(
-                var, self._vehicles[req.name].publishers[var].name))
+        print('\tOutput topic=', self._vehicles[req.name].publishers['nc_data'].name)
         return SubscribeToNCServerResponse(True)
 
     def publish_wind_velocity(self, event):
@@ -299,6 +277,8 @@ class NCDataServer:
         t = rospy.get_time()
         with self._lock:
             for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
                 if self._vehicles[name].odometry_reference_frame == 'ned':
                     w_east = self._interpolate_ned(
                         self._wind_vel_config['w_east'],
@@ -338,8 +318,18 @@ class NCDataServer:
                         self._vehicles[name].position['lon'],
                         self._vehicles[name].position['alt'],
                         t)
+
+                if 'wind_velocity' not in self._vehicles[name].publishers:
+                    self._vehicles[name].publishers['wind_velocity'] = \
+                        rospy.Publisher(
+                            '/{}/nc_data/wind_velocity'.format(name),
+                            Vector3Stamped,
+                            queue_size=1)
+                output = Vector3Stamped()
+                output.header.stamp = rospy.Time.now()
+                output.vector = Vector3(w_north, w_east, 0)
                 self._vehicles[name].publishers['wind_velocity'].publish(
-                    Vector3(w_north, w_east, 0))
+                    output)
         return True
 
     def publish_current_velocity(self, event):
@@ -349,6 +339,8 @@ class NCDataServer:
         t = rospy.get_time()
         with self._lock:
             for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
                 if self._vehicles[name].odometry_reference_frame == 'ned':
                     u_east = self._interpolate_ned(
                         self._current_vel_config['u_east'],
@@ -388,16 +380,39 @@ class NCDataServer:
                         self._vehicles[name].position['lon'],
                         self._vehicles[name].position['alt'],
                         t)
+
+                if 'current_velocity' not in self._vehicles[name].publishers:
+                    self._vehicles[name].publishers['current_velocity'] = \
+                        rospy.Publisher(
+                            '/{}/nc_data/current_velocity'.format(name),
+                            Vector3Stamped,
+                            queue_size=1)
+                output = Vector3Stamped()
+                output.header.stamp = rospy.Time.now()
+                output.vector = Vector3(v_north, u_east, 0)
                 self._vehicles[name].publishers['current_velocity'].publish(
-                    Vector3(v_north, u_east, 0))
+                    output)
         return True
 
     def publish_variables(self, event):
         with self._lock:
             t = rospy.get_time()
-            for var in self._variables:
-                self._pc_msgs[var].header.stamp = rospy.Time.now()
-                for name in self._vehicles:
+            for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
+                self._vehicles[name].pnts_msg.header.stamp = rospy.Time.now()
+                if self._vehicles[name].odometry_reference_frame in ['ned', 'enu']:
+                    self._vehicles[name].pnts_msg.points = \
+                        [Point32(self._vehicles[name].position['x'],
+                                 self._vehicles[name].position['y'],
+                                 self._vehicles[name].position['z'])]
+                else:
+                    self._vehicles[name].pnts_msg.points = \
+                        [Point32(self._vehicles[name].position['lat'],
+                                 self._vehicles[name].position['lon'],
+                                 self._vehicles[name].position['alt'])]
+
+                for var in self._get_all_variables():
                     if self._vehicles[name].odometry_reference_frame == 'ned':
                         value = self._interpolate_ned(
                             var,
@@ -430,30 +445,16 @@ class NCDataServer:
                             self._alt_ref)
 
                     # Updating the point cloud for this variable
-                    self._pc_msgs[var].points.append(Point32(xc, yc, zc))
-                    self._pc_msgs[var].channels[0].name = 'intensity'
-                    self._pc_msgs[var].channels[0].values.append(value)
+                    for i in range(len(self._vehicles[name].pnts_msg.channels)):
+                        if self._vehicles[name].pnts_msg.channels[i].name == var:
+                            self._vehicles[name].pnts_msg.channels[i].values = [value]
+                            break
 
-                    if len(self._pc_msgs[var].points) >= self._max_pnts:
-                        self._pc_msgs[var].points = self._pc_msgs[var].points[1::]
-                        self._pc_msgs[var].channels[0].values = self._pc_msgs[var].channels[0].values[1::]
-
-                    # Create the message objects
-                    if 'temperature' in var.lower():
-                        msg = Temperature()
-                        msg.header.stamp = rospy.Time.now()
-                        msg.header.frame_id = '%s/base_link' % name
-                        # TODO Read from the unit of temperature from NC file
-                        # Converting to Celsius
-                        msg.temperature = value - 273.15
-                    else:
-                        msg = Float64()
-                        msg.data = value
-                    self._vehicles[name].publishers[var].publish(msg)
-                self._pc_variables[var].publish(self._pc_msgs[var])
+                self._vehicles[name].publish_data()
         return True
 
     def _get_all_variables(self):
+        """Return list of all variables being published."""
         var = list()
         options = deepcopy(self._variables)
         if self._current_vel_config is not None:
@@ -618,6 +619,11 @@ class NCDataServer:
         return self._interpolate(variable, xc, yc, zc, time)
 
     def _interpolate(self, variable, x, y, z, time):
+        """
+        Receive the label of the variable to be returned, position and time
+        stamp. The input position must be given wrt the reference frame
+        convention
+        """
         # Add x and y offsets
         x += self._x_offset
         y += self._y_offset
