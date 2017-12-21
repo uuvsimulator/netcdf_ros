@@ -1,0 +1,669 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import rospy
+from uuv_nc_parser import NCParser
+import numpy as np
+from pymap3d import *
+from threading import Lock
+from copy import deepcopy
+from netcdf_ros_msgs.srv import *
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Vector3, Vector3Stamped, Point32
+from sensor_msgs.msg import PointCloud, ChannelFloat32, NavSatFix
+
+
+class NCDynamicNode:
+    def __init__(self, name, odometry_topic, odometry_reference_frame,
+                 using_gps=False):
+        assert len(name) > 0
+        assert len(odometry_topic) > 0
+        assert odometry_reference_frame in ['wgs84', 'enu', 'ned']
+
+        self.using_gps = using_gps
+        if self.using_gps:
+            self.odometry_reference_frame = 'wgs84'
+        else:
+            assert odometry_reference_frame != 'wgs84'
+            self.odometry_reference_frame = odometry_reference_frame
+
+        self.name = name
+        self.odometry_topic = odometry_topic
+        self.position = dict()
+        self.is_init = False
+
+        if self.using_gps:
+            self.subscriber = rospy.Subscriber(
+                self.odometry_topic, NavSatFix, self.gps_callback)
+        else:
+            self.subscriber = rospy.Subscriber(
+                self.odometry_topic, Odometry, self.odometry_callback)
+
+        self.publishers = dict()
+        self.publishers['nc_data'] = rospy.Publisher(
+            '/{0}/nc_data'.format(self.name), PointCloud, queue_size=1)
+
+        self.pnts_msg = PointCloud()
+        self.pnts_msg.header.frame_id = ''
+
+    def add_variables(self, variables):
+        for var in variables:
+            self.pnts_msg.channels.append(ChannelFloat32())
+            self.pnts_msg.channels[-1].name = var
+
+    def publish_data(self):
+        if len(self.pnts_msg.header.frame_id) > 0:
+            self.publishers['nc_data'].publish(self.pnts_msg)
+
+    def odometry_callback(self, msg):
+        if len(self.pnts_msg.header.frame_id) == 0:
+            self.pnts_msg.header.frame_id = msg.header.frame_id
+        self.position['x'] = msg.pose.pose.position.x
+        self.position['y'] = msg.pose.pose.position.y
+        self.position['z'] = msg.pose.pose.position.z
+        if not self.is_init:
+            self.is_init = True
+
+    def gps_callback(self, msg):
+        if len(self.pnts_msg.header.frame_id) == 0:
+            self.pnts_msg.header.frame_id = msg.header.frame_id
+        self.position['lat'] = msg.latitude
+        self.position['lon'] = msg.longitude
+        self.position['alt'] = msg.altitude
+        if not self.is_init:
+            self.is_init = True
+
+class NCDataServer:
+    def __init__(self):
+        self._lock = Lock()
+
+        self._filename = ''
+        if rospy.has_param('~filename') and \
+           rospy.has_param('~nc_data_ref_frame'):
+            self._filename = rospy.get_param('~filename')
+            nc_data_ref_frame = rospy.get_param('~nc_data_ref_frame')
+
+            if rospy.has_param('~labels'):
+                labels = rospy.get_param('~labels')
+            else:
+                labels = None
+
+            self._nc_data = NCParser(self._filename, nc_data_ref_frame, labels)
+            print(self._nc_data)
+        else:
+            raise rospy.ROSException('NC data filename not available')
+
+        self._lat_ref = 0.0
+        self._lon_ref = 0.0
+        self._alt_ref = 0.0
+
+        if rospy.has_param('~lat_ref'):
+            self._lat_ref = rospy.get_param('~lat_ref')
+
+        if rospy.has_param('~lon_ref'):
+            self._lon_ref = rospy.get_param('~lon_ref')
+
+        if rospy.has_param('~alt_ref'):
+            self._alt_ref = rospy.get_param('~alt_ref')
+
+        print('Geodetic reference (WGS84)')
+        print('\tLatitude [deg]=', self._lat_ref)
+        print('\tLongitude [deg]=', self._lon_ref)
+        print('\tAltitude [m]=', self._alt_ref)
+
+        if rospy.has_param('~fixed_time'):
+            self._fixed_time = rospy.get_param('~fixed_time')
+            print('Using fixed time=', self._fixed_time)
+        else:
+            self._fixed_time = None
+
+        if rospy.has_param('~loop_time'):
+            self._loop_time = rospy.get_param('~loop_time')
+        else:
+            self._loop_time = False
+
+        print('Loop time=', self._loop_time)
+
+        if rospy.has_param('~x_offset'):
+            self._x_offset = rospy.get_param('~x_offset')
+        else:
+            self._x_offset = 0.0
+
+        if rospy.has_param('~center_x'):
+            if rospy.get_param('~center_x'):
+                self._x_offset = self._nc_data.min_x + \
+                    (self._nc_data.max_x - self._nc_data.min_x) / 2.0
+
+        if rospy.has_param('~y_offset'):
+            self._y_offset = rospy.get_param('~y_offset')
+        else:
+            self._y_offset = 0.0
+
+        if rospy.has_param('~center_y'):
+            if rospy.get_param('~center_y'):
+                self._y_offset = self._nc_data.min_y + \
+                    (self._nc_data.max_y - self._nc_data.min_y) / 2.0
+
+        print('X coordinate offset [m]=', self._x_offset)
+        print('Y coordinate offset [m]=', self._y_offset)
+
+        self._update_rate = 50.0
+        if rospy.has_param('~update_rate'):
+            rate = rospy.get_param('~update_rate')
+            if rate > 0:
+                self._update_rate = float(rate)
+            else:
+                print('Invalid update rate, keeping default of 50 Hz')
+
+        if rospy.has_param('~current_velocity'):
+            self._current_vel_config = rospy.get_param('~current_velocity')
+            self._timer_current = rospy.Timer(
+                rospy.Duration(1 / self._update_rate),
+                self.publish_current_velocity)
+            print('Publishing local current velocity')
+        else:
+            self._current_vel_config = None
+
+        if rospy.has_param('~wind_velocity'):
+            self._wind_vel_config = rospy.get_param('~wind_velocity')
+            self._timer_wind = rospy.Timer(
+                rospy.Duration(1 / self._update_rate),
+                self.publish_wind_velocity)
+            print('Publishing local wind velocity')
+        else:
+            self._wind_vel_config = None
+
+        if rospy.has_param('~variables'):
+            self._variables = rospy.get_param('~variables')
+            assert isinstance(self._variables, list)
+            print('NC file variables to be published=',
+                  self._get_all_variables())
+        else:
+            self._variables = None
+            print('No variables set to be published')
+
+        self._max_pnts = 300
+        if rospy.has_param('~max_size_pc'):
+            if rospy.get_param('~max_size_pc'):
+                self._max_pnts = rospy.get_param('~max_size_pc')
+
+        self._time_offset = 0
+        if rospy.has_param('~time_offset'):
+            offset = rospy.get_param('~time_offset')
+            if 'day' in offset:
+                self._time_offset += int(offset['day']) * \
+                    self._nc_data.DAY2HOUR * self._nc_data.HOUR2MIN * \
+                    self._nc_data.MIN2SEC
+            if 'hour' in offset:
+                self._time_offset += int(offset['hour']) * \
+                    self._nc_data.HOUR2MIN * self._nc_data.MIN2SEC
+            if 'min' in offset:
+                self._time_offset += int(offset['min']) * self._nc_data.MIN2SEC
+            print('Starting time: {0} days, {1} hours, {2} minutes'.format(
+                int(offset['day']), int(offset['hour']), int(offset['min'])))
+            print('Starting time in seconds:', self._time_offset)
+
+        self._services = dict()
+
+        self._services['interpolate_nc_data'] = rospy.Service(
+            'interpolate_nc_data', GetNCData, self.get_nc_data)
+
+        self._services['get_nc_variables'] = rospy.Service(
+            'get_nc_variables', GetNCVariables, self.get_nc_variables)
+
+        self._services['get_nc_wind_velocity'] = rospy.Service(
+            'get_nc_wind_velocity', GetNCVelocity, self.get_nc_wind_velocity)
+
+        self._services['get_nc_current_velocity'] = rospy.Service(
+            'get_nc_current_velocity', GetNCVelocity,
+            self.get_nc_current_velocity)
+
+        ###############################################################
+        # Initializing topics for each vehicle
+        ###############################################################
+
+        self._vehicles = dict()
+
+        self._subscribe_vehicle_srv = rospy.Service(
+            'subscribe_vehicle',
+            SubscribeToNCServer,
+            self.subscribe_vehicle_callback)
+
+        self._timer_var = rospy.Timer(rospy.Duration(1. / self._update_rate),
+                                      self.publish_variables)
+
+    def subscribe_vehicle_callback(self, req):
+        """
+        Callback function to the subscribe vehicle service, creating a new
+        dynamic node instance and creating individual topics for the NC data
+        variables given as an input.
+        """
+        if req.name in self._vehicles:
+            return SubscribeToNCServerResponse(False)
+
+        # Create an instance of the NC dynamic node to hold topic publishers
+        # and subscribers for the vehicle's odometry topics
+        self._vehicles[req.name] = NCDynamicNode(
+            req.name, req.odometry_topic, req.odometry_reference_frame,
+            req.using_gps)
+
+        self._vehicles[req.name].add_variables(self._get_all_variables())
+
+        print('Subscribing new vehicle')
+        print('\tNamaspace=', self._vehicles[req.name].name)
+        print('\tOdometry topic=', self._vehicles[req.name].odometry_topic)
+        print('\tOdometry reference frame=',
+              self._vehicles[req.name].odometry_reference_frame)
+        print('\tOutput topic=', self._vehicles[req.name].publishers['nc_data'].name)
+        return SubscribeToNCServerResponse(True)
+
+    def publish_wind_velocity(self, event):
+        if self._wind_vel_config is None:
+            return True
+
+        t = rospy.get_time()
+        with self._lock:
+            for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
+                if self._vehicles[name].odometry_reference_frame == 'ned':
+                    w_east = self._interpolate_ned(
+                        self._wind_vel_config['w_east'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                    w_north = self._interpolate_ned(
+                        self._wind_vel_config['w_north'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                elif self._vehicles[name].odometry_reference_frame == 'enu':
+                    w_east = self._interpolate_enu(
+                        self._wind_vel_config['w_east'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                    w_north = self._interpolate_enu(
+                        self._wind_vel_config['w_north'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                else:
+                    w_east = self._interpolate_wgs84(
+                        self._wind_vel_config['w_east'],
+                        self._vehicles[name].position['lat'],
+                        self._vehicles[name].position['lon'],
+                        self._vehicles[name].position['alt'],
+                        t)
+                    w_north = self._interpolate_wgs84(
+                        self._wind_vel_config['w_north'],
+                        self._vehicles[name].position['lat'],
+                        self._vehicles[name].position['lon'],
+                        self._vehicles[name].position['alt'],
+                        t)
+
+                if 'wind_velocity' not in self._vehicles[name].publishers:
+                    self._vehicles[name].publishers['wind_velocity'] = \
+                        rospy.Publisher(
+                            '/{}/nc_data/wind_velocity'.format(name),
+                            Vector3Stamped,
+                            queue_size=1)
+                output = Vector3Stamped()
+                output.header.stamp = rospy.Time.now()
+                output.vector = Vector3(w_north, w_east, 0)
+                self._vehicles[name].publishers['wind_velocity'].publish(
+                    output)
+        return True
+
+    def publish_current_velocity(self, event):
+        if self._current_vel_config is None:
+            return True
+
+        t = rospy.get_time()
+        with self._lock:
+            for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
+                if self._vehicles[name].odometry_reference_frame == 'ned':
+                    u_east = self._interpolate_ned(
+                        self._current_vel_config['u_east'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                    v_north = self._interpolate_ned(
+                        self._current_vel_config['v_north'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                elif self._vehicles[name].odometry_reference_frame == 'enu':
+                    u_east = self._interpolate_enu(
+                        self._current_vel_config['u_east'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                    v_north = self._interpolate_enu(
+                        self._current_vel_config['v_north'],
+                        self._vehicles[name].position['x'],
+                        self._vehicles[name].position['y'],
+                        self._vehicles[name].position['z'],
+                        t)
+                else:
+                    u_east = self._interpolate_wgs84(
+                        self._current_vel_config['u_east'],
+                        self._vehicles[name].position['lat'],
+                        self._vehicles[name].position['lon'],
+                        self._vehicles[name].position['alt'],
+                        t)
+                    v_north = self._interpolate_wgs84(
+                        self._current_vel_config['v_north'],
+                        self._vehicles[name].position['lat'],
+                        self._vehicles[name].position['lon'],
+                        self._vehicles[name].position['alt'],
+                        t)
+
+                if 'current_velocity' not in self._vehicles[name].publishers:
+                    self._vehicles[name].publishers['current_velocity'] = \
+                        rospy.Publisher(
+                            '/{}/nc_data/current_velocity'.format(name),
+                            Vector3Stamped,
+                            queue_size=1)
+                output = Vector3Stamped()
+                output.header.stamp = rospy.Time.now()
+                output.vector = Vector3(v_north, u_east, 0)
+                self._vehicles[name].publishers['current_velocity'].publish(
+                    output)
+        return True
+
+    def publish_variables(self, event):
+        with self._lock:
+            t = rospy.get_time()
+            for name in self._vehicles:
+                if not self._vehicles[name].is_init:
+                    continue
+                self._vehicles[name].pnts_msg.header.stamp = rospy.Time.now()
+                if self._vehicles[name].odometry_reference_frame in ['ned', 'enu']:
+                    self._vehicles[name].pnts_msg.points = \
+                        [Point32(self._vehicles[name].position['x'],
+                                 self._vehicles[name].position['y'],
+                                 self._vehicles[name].position['z'])]
+                else:
+                    self._vehicles[name].pnts_msg.points = \
+                        [Point32(self._vehicles[name].position['lat'],
+                                 self._vehicles[name].position['lon'],
+                                 self._vehicles[name].position['alt'])]
+
+                for var in self._get_all_variables():
+                    if self._vehicles[name].odometry_reference_frame == 'ned':
+                        value = self._interpolate_ned(
+                            var,
+                            self._vehicles[name].position['x'],
+                            self._vehicles[name].position['y'],
+                            self._vehicles[name].position['z'],
+                            t)
+                        xc, yc, zc = self._vehicles[name].position['y'], self._vehicles[name].position['x'], -1 * self._vehicles[name].position['z']
+                    elif self._vehicles[name].odometry_reference_frame == 'enu':
+                        value = self._interpolate_enu(
+                            var,
+                            self._vehicles[name].position['x'],
+                            self._vehicles[name].position['y'],
+                            self._vehicles[name].position['z'],
+                            t)
+                        xc, yc, zc = self._vehicles[name].position['x'], self._vehicles[name].position['y'], self._vehicles[name].position['z']
+                    elif self._vehicles[name].odometry_reference_frame == 'wgs84':
+                        value = self._interpolate_wgs84(
+                            var,
+                            self._vehicles[name].position['lat'],
+                            self._vehicles[name].position['lon'],
+                            self._vehicles[name].position['alt'],
+                            t)
+                        xc, yc, zc = geodetic2enu(
+                            self._vehicles[name].position['lat'],
+                            self._vehicles[name].position['lon'],
+                            self._vehicles[name].position['alt'],
+                            self._lat_ref,
+                            self._lon_ref,
+                            self._alt_ref)
+
+                    # Updating the point cloud for this variable
+                    for i in range(len(self._vehicles[name].pnts_msg.channels)):
+                        if self._vehicles[name].pnts_msg.channels[i].name == var:
+                            self._vehicles[name].pnts_msg.channels[i].values = [value]
+                            break
+
+                self._vehicles[name].publish_data()
+        return True
+
+    def _get_all_variables(self):
+        """Return list of all variables being published."""
+        var = list()
+        options = deepcopy(self._variables)
+        if self._current_vel_config is not None:
+            options += self._current_vel_config.values()
+        if self._wind_vel_config is not None:
+            options += self._wind_vel_config.values()
+
+        for v in options:
+            if v in self._nc_data.variable_names:
+                var.append(v)
+            else:
+                print('{} not a valid variable'.format(v))
+        return var
+
+    def get_nc_wind_velocity(self, request):
+        """
+        Service callback function to return the wind velocity given a position
+        vector wrt ENU, NED or geodetic (WGS84) reference frame.
+        """
+        if self._wind_vel_config is not None:
+            if request.reference_frame_convention == 'ned':
+                w_east = self._interpolate_ned(
+                    self._wind_vel_config['w_east'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+                w_north = self._interpolate_ned(
+                    self._wind_vel_config['w_north'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+            elif request.reference_frame_convention == 'enu':
+                w_east = self._interpolate_enu(
+                    self._wind_vel_config['w_east'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+                w_north = self._interpolate_ned(
+                    self._wind_vel_config['w_north'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+            elif request.reference_frame_convention == 'wgs84':
+                w_east = self._interpolate_wgs84(
+                    self._wind_vel_config['w_east'],
+                    request.geo_point.latitude,
+                    request.geo_point.longitude,
+                    request.geo_point.altitude,
+                    request.time)
+                w_north = self._interpolate_wgs84(
+                    self._wind_vel_config['w_north'],
+                    request.geo_point.latitude,
+                    request.geo_point.longitude,
+                    request.geo_point.altitude,
+                    request.time)
+            else:
+                w_east = 0.0
+                w_north = 0.0
+        return GetNCVelocityResponse(w_north, w_east)
+
+    def get_nc_current_velocity(self, request):
+        """
+        Service callback function to return the current velocity given a
+        position vector wrt ENU, NED or geodetic (WGS84) reference frame.
+        """
+        if self._current_vel_config is not None:
+            if request.reference_frame_convention == 'ned':
+                u_east = self._interpolate_ned(
+                    self._current_vel_config['u_east'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+                v_north = self._interpolate_ned(
+                    self._current_vel_config['v_north'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+            elif request.reference_frame_convention == 'enu':
+                u_east = self._interpolate_enu(
+                    self._current_vel_config['u_east'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+                v_north = self._interpolate_enu(
+                    self._current_vel_config['v_north'],
+                    request.point.x,
+                    request.point.y,
+                    request.point.z,
+                    request.time)
+            elif request.reference_frame_convention == 'wgs84':
+                u_east = self._interpolate_wgs84(
+                    self._current_vel_config['u_east'],
+                    request.geo_point.latitude,
+                    request.geo_point.longitude,
+                    request.geo_point.altitude,
+                    request.time)
+                v_north = self._interpolate_wgs84(
+                    self._current_vel_config['v_north'],
+                    request.geo_point.latitude,
+                    request.geo_point.longitude,
+                    request.geo_point.altitude,
+                    request.time)
+            else:
+                v_north = 0.0
+                u_east = 0.0
+        return GetNCVelocityResponse(v_north, u_east)
+
+    def get_nc_variables(self, request):
+        return GetNCVariablesResponse(self._variables,
+                                      self._nc_data.reference_frame_convention)
+
+    def get_nc_data(self, request):
+        if request.variable not in self._get_all_variables():
+            print('Invalid variable, var_name=', request.variable)
+            return GetNCDataResponse(0.0)
+
+        if request.reference_frame_convention == 'ned':
+            value = self._interpolate_ned(
+                request.variable,
+                request.point.x,
+                request.point.y,
+                request.point.z,
+                request.time)
+        elif request.reference_frame_convention == 'enu':
+            value = self._interpolate_enu(
+                request.variable,
+                request.point.x,
+                request.point.y,
+                request.point.z,
+                request.time)
+        elif request.reference_frame_convention == 'wgs84':
+            value = self._interpolate_wgs84(
+                request.variable,
+                request.geo_point.latitude,
+                request.geo_point.longitude,
+                request.geo_point.altitude,
+                request.time)
+
+        return GetNCDataResponse(value)
+
+    def _interpolate_ned(self, variable, x, y, z, time):
+        if self._nc_data.reference_frame_convention == 'ned':
+            xc, yc, zc = x, y, z
+        elif self._nc_data.reference_frame_convention == 'enu':
+            xc, yc, zc = y, x, -1 * z
+        else:
+            xc, yc, zc = ned2geodetic(
+                x, y, z, self._lat_ref, self._lon_ref, self._alt_ref)
+        return self._interpolate(variable, xc, yc, zc, time)
+
+    def _interpolate_wgs84(self, variable, lat, lon, z, time):
+        if self._nc_data.reference_frame_convention == 'ned':
+            xc, yc, zc = geodetic2ned(
+                lat, lon, z, self._lat_ref, self._lon_ref, self._alt_ref)
+        elif self._nc_data.reference_frame_convention == 'enu':
+            xc, yc, zc = geodetic2enu(
+                lat, lon, z, self._lat_ref, self._lon_ref, self._alt_ref)
+        else:
+            xc, yc, zc = lat, lon, z
+
+        return self._interpolate(variable, xc, yc, zc, time)
+
+    def _interpolate_enu(self, variable, x, y, z, time):
+        if self._nc_data.reference_frame_convention == 'ned':
+            xc, yc, zc = y, x, -1 * z
+        elif self._nc_data.reference_frame_convention == 'enu':
+            xc, yc, zc = x, y, z
+        else:
+            xc, yc, zc = enu2geodetic(
+                x, y, z, self._lat_ref, self._lon_ref, self._alt_ref)
+        return self._interpolate(variable, xc, yc, zc, time)
+
+    def _interpolate(self, variable, x, y, z, time):
+        """
+        Receive the label of the variable to be returned, position and time
+        stamp. The input position must be given wrt the reference frame
+        convention
+        """
+        # Add x and y offsets
+        x += self._x_offset
+        y += self._y_offset
+
+        if not self._loop_time:
+            # Use fixed or simulation time
+            t = (time if self._fixed_time is None else self._fixed_time)
+        else:
+            # Loop the time vector, if needed
+            t = time % self._nc_data.end_time
+        t += float(self._time_offset)
+
+        # Interpolate the given variables on the current position and time
+        output = self._nc_data.interpolate(
+            variable, x, y, z, t)
+        return output
+
+
+if __name__ == '__main__':
+    print('NetCDF data server')
+    rospy.init_node('nc_data_server')
+
+    try:
+        pb = NCDataServer()
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        print('caught exception')
