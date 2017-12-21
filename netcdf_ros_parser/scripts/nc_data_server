@@ -525,7 +525,6 @@ class NCDataServer:
         position vector wrt ENU, NED or geodetic (WGS84) reference frame.
         """
         if self._current_vel_config is not None:
-            print('Request current velocity')
             if request.reference_frame_convention == 'ned':
                 u_east = self._interpolate_ned(
                     self._current_vel_config['u_east'],
@@ -579,12 +578,29 @@ class NCDataServer:
             print('Invalid variable, var_name=', request.variable)
             return GetNCDataResponse(0.0)
 
-        return GetNCDataResponse(
-            self._interpolate(request.variable,
-                              request.x,
-                              request.y,
-                              request.z,
-                              request.time))
+        if request.reference_frame_convention == 'ned':
+            value = self._interpolate_ned(
+                request.variable,
+                request.point.x,
+                request.point.y,
+                request.point.z,
+                request.time)
+        elif request.reference_frame_convention == 'enu':
+            value = self._interpolate_enu(
+                request.variable,
+                request.point.x,
+                request.point.y,
+                request.point.z,
+                request.time)
+        elif request.reference_frame_convention == 'wgs84':
+            value = self._interpolate_wgs84(
+                request.variable,
+                request.geo_point.latitude,
+                request.geo_point.longitude,
+                request.geo_point.altitude,
+                request.time)
+
+        return GetNCDataResponse(value)
 
     def _interpolate_ned(self, variable, x, y, z, time):
         if self._nc_data.reference_frame_convention == 'ned':
