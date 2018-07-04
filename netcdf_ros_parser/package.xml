@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
-<package>
+<package format="2">
   <name>netcdf_ros_parser</name>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
   <description>The netcdf_ros_parser package</description>
 
   <maintainer email="Musa.Marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</maintainer>
@@ -16,16 +16,16 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
-  <run_depend>geometry_msgs</run_depend>
-  <run_depend>geographic_msgs</run_depend>
-  <run_depend>sensor_msgs</run_depend>
-  <run_depend>nav_msgs</run_depend>
-  <run_depend>std_msgs</run_depend>
-  <run_depend>rospy</run_depend>
-  <run_depend>rostopic</run_depend>
-  <run_depend>rosgraph</run_depend>
-  <run_depend>roslib</run_depend>
-  <run_depend>python-numpy</run_depend>
-  <run_depend>python-scipy</run_depend>
-  <run_depend>netcdf_ros_msgs</run_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>geographic_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>rostopic</exec_depend>
+  <exec_depend>rosgraph</exec_depend>
+  <exec_depend>roslib</exec_depend>
+  <exec_depend>python-numpy</exec_depend>
+  <exec_depend>python-scipy</exec_depend>
+  <exec_depend>netcdf_ros_msgs</exec_depend>
 </package>
