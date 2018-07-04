@@ -2,8 +2,8 @@
 Changelog for package netcdf_ros_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.1.1 (2018-07-04)
+------------------
 * Merge pull request `#1 <https://github.com/uuvsimulator/netcdf_ros/issues/1>`_ from uuvsimulator/feature/initial_commit
   Feature/initial commit
 * CHANGE Variable name
