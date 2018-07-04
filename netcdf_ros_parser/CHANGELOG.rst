@@ -2,6 +2,16 @@
 Changelog for package netcdf_ros_parser
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.1.3 (2018-07-04)
+------------------
+* ADD Correct version of pymap3d to requirements file
+* Contributors: Musa Morena Marcusso Manhaes
+
+0.1.2 (2018-07-04)
+------------------
+* RM Merge logs from the CHANGELOG files
+* Contributors: Musa Morena Marcusso Manhaes
+
 0.1.1 (2018-07-04)
 ------------------
 * ADD Example to interpolate_nc_data service call
@@ -14,4 +24,4 @@ Changelog for package netcdf_ros_parser
 * ADD Sample geodetic reference frame
 * FIX Y coordinate points limits
 * ADD netcdf parser server nodes and Python packages
-* Contributors: Musa Morena Marcusso Manhaes, Musa Morena Marcusso Manhães
+* Contributors: Musa Morena Marcusso Manhaes
