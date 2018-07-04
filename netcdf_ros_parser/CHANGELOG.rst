@@ -4,8 +4,6 @@ Changelog for package netcdf_ros_parser
 
 0.1.1 (2018-07-04)
 ------------------
-* Merge pull request `#1 <https://github.com/uuvsimulator/netcdf_ros/issues/1>`_ from uuvsimulator/feature/initial_commit
-  Feature/initial commit
 * ADD Example to interpolate_nc_data service call
 * CHANGE NC data output to sensor_msgs/PointCloud
 * ADD Demo for the service callback for current and wind velocity
